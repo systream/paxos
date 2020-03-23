@@ -108,7 +108,9 @@ groups() ->
       get_timeout,
       sync_not_set,
       sync_prepare,
-      sync_accept
+      sync_accept,
+      fold_empty,
+      fold
     ]},
     {dets_group, [{repeat, 1}, parallel], [
       prepare_ok,
@@ -128,7 +130,9 @@ groups() ->
       get_timeout,
       sync_not_set,
       sync_prepare,
-      sync_accept
+      sync_accept,
+      fold_empty,
+      fold
     ]}
   ].
 
@@ -166,7 +170,7 @@ dets_group({postlude, Config}) ->
 init_group(Module) ->
   Self = self(),
   spawn(fun() ->
-    {ok, Pid} = paxos_acceptor:start_link(Module),
+    {ok, Pid} = paxos_acceptor:start_link(Module, []),
     Self ! {pid, Pid}
         end),
   {ok, Pid} = receive
@@ -284,7 +288,7 @@ unknown_msg(Config) ->
   ?assertEqual({message_queue_len, 0}, erlang:process_info(self(), message_queue_len)).
 
 cannot_start_process(_Config) ->
-  ?assertEqual({error, timeout}, paxos_acceptor:start_link(paxos_acceptor_fixture)).
+  ?assertEqual({error, timeout}, paxos_acceptor:start_link(paxos_acceptor_fixture, [])).
 
 
 get_not_set(Config) ->
@@ -346,6 +350,36 @@ sync_accept(Config) ->
   accepted_ok = receive_response(1, Key),
   ok = paxos_acceptor:sync(Pid, Key, foo),
   ?assertEqual({ok, foo}, paxos_acceptor:get(Pid, Key, infinity)).
+
+fold_empty(Config) ->
+  Pid = proplists:get_value(pid, Config),
+  Key = "test_sync_test14",
+  ok = paxos_acceptor:prepare_request(Pid, 1, Key),
+  Self = self(),
+  paxos_acceptor:fold(Pid, fun(FKey, Value) -> Self ! {kv, FKey, Value} end),
+  Result =
+    receive
+      {kv, KeyR, _Value} when KeyR == Key->
+        found
+      after 100 ->
+      not_found
+    end,
+  ?assertEqual(not_found, Result).
+
+fold(Config) ->
+  Pid = proplists:get_value(pid, Config),
+  Key = "test_sync_test21",
+  ok = paxos_acceptor:sync(Pid, Key, foo),
+  Self = self(),
+  paxos_acceptor:fold(Pid, fun(FKey, Value) -> Self ! {kv, FKey, Value} end),
+  Result =
+    receive
+      {kv, KeyR, foo} when KeyR == Key ->
+        found
+    after 100 ->
+      not_found
+    end,
+  ?assertEqual(found, Result).
 
 flush() ->
   receive

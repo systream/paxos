@@ -11,11 +11,11 @@
 -behavior(paxos_acceptor).
 
 %-define(LOG(F, A), io:format(F, A)).
-%-define(LOG(_F, _A), ok).
--define(LOG(F, A), ct:pal(F, A)).
+-define(LOG(_F, _A), ok).
+%-define(LOG(F, A), ct:pal(F, A)).
 
 %% API
--export([prepare/3, init/0, accept/4, sync/3, get/2]).
+-export([prepare/3, init/0, accept/4, sync/3, get/2, fold/2]).
 
 init() ->
   {ok, ets:new(paxos_acceptor, [ordered_set, public])}.
@@ -84,3 +84,14 @@ get(Ref, EtsRef) ->
     _ ->
       not_found
   end.
+
+-spec fold(Fun, State) -> ok when
+  Fun :: fun((Key :: term(), Value :: term()) -> term()),
+  State :: term().
+fold(Fun, EtsRef) ->
+  ets:foldl(fun({Ref, accepted, Value}, _Acc) ->
+                  Fun(Ref, Value),
+                  ok;
+               (_, Acc) ->
+                  Acc
+            end, ok, EtsRef).

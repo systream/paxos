@@ -10,7 +10,7 @@
 
 -behaviour(supervisor).
 
--export([start_link/0, start_acceptor/1, stop_acceptor/1]).
+-export([start_link/0, stop_acceptor/1, start_acceptor/2]).
 
 -export([init/1]).
 
@@ -33,9 +33,10 @@ init([]) ->
   ],
   {ok, {SupFlags, ChildSpecs}}.
 
--spec start_acceptor(module()) -> pid().
-start_acceptor(AcceptorModule) ->
-  {ok, Pid} = supervisor:start_child(?MODULE, [AcceptorModule]),
+
+-spec start_acceptor(module(), [pid()]) -> pid().
+start_acceptor(AcceptorModule, Acceptors) ->
+  {ok, Pid} = supervisor:start_child(?MODULE, [AcceptorModule, Acceptors]),
   Pid.
 
 -spec stop_acceptor(pid() | atom()) -> ok | {error, term()}.

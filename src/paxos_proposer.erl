@@ -37,7 +37,7 @@ get(Key, Num, AcceptorList) when Num >= 1 ->
   ?LOG("* Start get request Key: ~p Num: ~p~n", [Key, Num]),
   send_get_request(Key, AcceptorList, Num),
   Majority = (Num div 2) + 1,
-  receive_object(Key, #{}, Majority).
+  receive_object(Key, #{}, Majority, Num).
 
 
 -spec put(term(), term()) ->
@@ -93,7 +93,7 @@ put(Key, Value, Id) ->
       Else
   end.
 
-receive_object(Key, Stat, Majority) ->
+receive_object(Key, Stat, Majority, NotReplied) ->
   receive
     {get_response, Key, Value} ->
       ?LOG("Got get response for ~p with: ~p ~n", [Key, Value]),
@@ -102,8 +102,9 @@ receive_object(Key, Stat, Majority) ->
       ?LOG("Stat: ~p~nMajority: ~p~n", [NewStat, Majority]),
       case NewCount >= Majority of
         false ->
-          receive_object(Key, NewStat, Majority);
+          receive_object(Key, NewStat, Majority, NotReplied-1);
         _ ->
+          io:format(user, "Stat: ~p~n", [NewStat]),
           Value
       end
   after ?DEFAULT_TIMEOUT ->
@@ -117,11 +118,11 @@ receive_object(Key, Stat, Majority) ->
 
 stat_majority_check(Stat, Majority) ->
   maps:fold(fun (_, _, Value) when Value =/= not_found ->
-    Value;
-    (Value, Count, not_found) when Count >= Majority ->
-      Value;
-    (_Value, _Count, not_found) ->
-      not_found
+                  Value;
+                (Value, Count, not_found) when Count >= Majority ->
+                  Value;
+                (_Value, _Count, not_found) ->
+                  not_found
             end, not_found, Stat).
 
 send_get_request(_Key, _AcceptorList, 0) ->
@@ -196,7 +197,7 @@ receive_reply(Stat, Majority, Key, Id) ->
 maybe_sleep(Id) when is_number(Id) ->
   case Id rem 10 of
     0 ->
-      timer:sleep(rand:uniform(3));
+      timer:sleep(rand:uniform(30));
     _ ->
       ok
   end.

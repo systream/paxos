@@ -29,15 +29,18 @@
 -callback get(Ref :: term(), State) -> {ok, term()} | not_found
   when State :: term().
 
+-callback fold(Fun, State) -> ok when
+  Fun :: fun((Key :: term(), Value :: term()) -> term()),
+  State :: term().
 
 %% API
--export([ start_link/1,
-          prepare_request/3,
-          accept_request/4,
-          get/3,
-          sync/3,
-          send_get_request/2,
-          loop/2]).
+-export([start_link/2,
+  prepare_request/3,
+  accept_request/4,
+  get/3,
+  sync/3,
+  send_get_request/2,
+  loop/2, fold/2]).
 
 
 -spec prepare_request(pid(), pos_integer(), term()) -> ok.
@@ -70,20 +73,29 @@ sync(Pid, Key, Value) ->
   Pid ! {sync, Key, Value},
   ok.
 
+-spec fold(pid(), Fun :: fun((Key :: term(), Value :: term()) -> term())) -> ok.
+fold(Pid, Fun) ->
+  Pid ! {fold, Fun},
+  ok.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(start_link(module()) ->
+-spec(start_link(module(), [pid()]) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link(Module) ->
+start_link(Module, AcceptorsList) ->
   Self = self(),
   Ref = make_ref(),
   Pid = proc_lib:spawn(fun() ->
                             {ok, State} = Module:init(),
                             Self ! {paxos_started, Module, Ref},
+                            CurrentAcceptorPid = self(),
+                            spawn_link(fun() ->
+                                        initial_sync(CurrentAcceptorPid, AcceptorsList)
+                                       end),
                             loop(Module, State)
                          end),
   receive
@@ -95,6 +107,15 @@ start_link(Module) ->
     {error, timeout}
   end.
 
+initial_sync(_, []) ->
+  ok;
+initial_sync(CurrentAcceptorPid, [FirstAcceptor | _]) ->
+  ct:pal("fist acceptor: ~p", [FirstAcceptor]),
+  paxos_acceptor:fold(FirstAcceptor,
+                      fun(Key, Value) ->
+                        paxos_acceptor:sync(CurrentAcceptorPid, Key, Value)
+                      end),
+  ok.
 
 -spec loop(module(), term()) -> no_return().
 loop(Module, State) ->
@@ -129,6 +150,9 @@ loop(Module, State) ->
           SenderPid ! {already_agreed, Id, Key, StoredValue},
           ?MODULE:loop(Module, NewState)
       end;
+    {fold, Fun} ->
+      spawn_link(fun() -> Module:fold(Fun, State) end),
+      ?MODULE:loop(Module, State);
     _M ->
       %io:format("Unkown msg: ~p ~p~n", [_M, self()]),
       ?MODULE:loop(Module, State)

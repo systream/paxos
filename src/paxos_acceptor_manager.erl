@@ -112,7 +112,7 @@ handle_call(get_acceptors, _From, #state{acceptors = Acceptors, majority = M} = 
 handle_call({get_acceptors_by_node, Node}, _From, #state{acceptors = Acceptors} = State) ->
   {reply, get_pids_by_node(Node, Acceptors), State};
 handle_call({start_acceptor, Module}, _From, #state{acceptors = Acceptors} = State) ->
-  Pid = paxos_acceptor_manager_sup:start_acceptor(Module),
+  Pid = paxos_acceptor_manager_sup:start_acceptor(Module, lists:map(fun({_, Pid}) -> Pid end, Acceptors)),
   gen_server:multi_call(nodes(), ?MODULE, {join, node(), Pid}),
   NewState = State#state{acceptors = [{node(), Pid} | Acceptors]},
   {reply, Pid, count_total(NewState)};
