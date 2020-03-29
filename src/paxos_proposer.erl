@@ -104,7 +104,6 @@ receive_object(Key, Stat, Majority, NotReplied) ->
         false ->
           receive_object(Key, NewStat, Majority, NotReplied-1);
         _ ->
-          io:format(user, "Stat: ~p~n", [NewStat]),
           Value
       end
   after ?DEFAULT_TIMEOUT ->
