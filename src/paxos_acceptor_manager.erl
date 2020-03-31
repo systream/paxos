@@ -15,7 +15,9 @@
           get_acceptors/0,
           stop_acceptor/1,
           get_acceptors_by_node/1,
-          start_acceptor/1]).
+          start_acceptor/1,
+          subscribe/1,
+          unsubscribe/1]).
 
 %% gen_server callbacks
 -export([ init/1,
@@ -29,7 +31,8 @@
 
 -record(state, {acceptors = [] :: list(),
                 majority = 1 :: pos_integer(),
-                down_nodes = [] :: [pid()]
+                down_nodes = [] :: [pid()],
+                subscribers = [] :: list({pid(), reference()})
 }).
 
 %%%===================================================================
@@ -54,6 +57,14 @@ get_acceptors_by_node(Node) ->
   ok | term().
 stop_acceptor(Pid) ->
   gen_server:call(?MODULE, {stop_acceptor, Pid}).
+
+-spec subscribe(pid()) -> ok.
+subscribe(Pid) ->
+  gen_server:call(?MODULE, {subscribe, Pid}).
+
+-spec unsubscribe(pid()) -> ok.
+unsubscribe(Pid) ->
+  gen_server:call(?MODULE, {unsubscribe, Pid}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -113,9 +124,11 @@ handle_call({get_acceptors_by_node, Node}, _From, #state{acceptors = Acceptors} 
   {reply, get_pids_by_node(Node, Acceptors), State};
 handle_call({start_acceptor, Module}, _From, #state{acceptors = Acceptors} = State) ->
   Pid = paxos_acceptor_manager_sup:start_acceptor(Module, lists:map(fun({_, Pid}) -> Pid end, Acceptors)),
+  erlang:monitor(process, Pid),
   gen_server:multi_call(nodes(), ?MODULE, {join, node(), Pid}),
+  notify({acceptor_started, Pid}, State),
   NewState = State#state{acceptors = [{node(), Pid} | Acceptors]},
-  {reply, Pid, count_total(NewState)};
+  {reply, Pid, update_majority(NewState)};
 handle_call({stop_acceptor, Pid}, From, State) when node(Pid) /= node() ->
   % acceptor is not handled by this node
   Node = node(Pid),
@@ -135,17 +148,24 @@ handle_call({stop_acceptor, Pid}, _From, #state{acceptors = Acceptors} = State) 
   NewList = lists:filter(fun({_, CPid}) -> CPid =/= Pid end, Acceptors),
   paxos_acceptor_manager_sup:stop_acceptor(Pid),
   gen_server:multi_call(nodes(), ?MODULE, {leave, node(), Pid}),
+  notify({acceptor_stopped, Pid}, State),
   NewState = State#state{acceptors = NewList},
-  {reply, ok, count_total(NewState)};
+  {reply, ok, update_majority(NewState)};
+
 handle_call({join, Node, Pid}, _From, #state{acceptors = A} = State) ->
   NewState = State#state{acceptors = [{Node, Pid} | A]},
-  {reply, ok, count_total(NewState)};
-handle_call({leave, _Node, Pid}, _From, #state{acceptors = A} = State) ->
-  NewA = lists:filter(fun({_, CPid}) -> CPid =/= Pid end, A),
-  NewState = State#state{acceptors = NewA},
-  {reply, ok, count_total(NewState)};
+  notify({acceptor_started, Pid}, State),
+  {reply, ok, update_majority(NewState)};
+handle_call({leave, _Node, Pid}, _From, State) ->
+  {reply, ok, leave_acceptor(Pid, State)};
+
+handle_call({subscribe, Pid}, _From, State) ->
+  {reply, ok, subscribe(Pid, State)};
+handle_call({unsubscribe, Pid}, _From, State) ->
+  {reply, ok, unsubscribe(Pid, State)};
+
 handle_call(_Request, _From, State) ->
-  {reply, ok, State}.
+  {reply, unknown_comand, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -161,8 +181,21 @@ handle_call(_Request, _From, State) ->
 handle_cast({exchange, Node, List}, #state{acceptors = Acceptors} = State) ->
   NewList = lists:filter(fun({Cnode, _}) -> Cnode =/= Node end, Acceptors),
   NewList2 = lists:foldl(fun(Pid, Acc) -> [{Node, Pid} | Acc] end, NewList, List),
+
+  %lists:foreach(fun(Item) ->
+  %                case lists:member(Item, Acceptors) of
+  %                  false ->
+                      % new/unseen acceptor
+  %                    {_, Pid} = Item,
+  %                    notify({acceptor_started, Pid}, State),
+  %                    ok;
+  %                  _ ->
+  %                    ok
+  %                end
+  %              end, NewList2),
+
   NewState = State#state{acceptors = NewList2},
-  {noreply, count_total(NewState)};
+  {noreply, update_majority(NewState)};
 handle_cast(_Request, State) ->
   {noreply, State}.
 
@@ -189,7 +222,7 @@ handle_info({nodedown, Node}, #state{down_nodes = Dn, acceptors = Acceptors} = S
       % Not seen any pid from this node, maybe we out of sync
       NewList2 = get_pid_for_remote_not_from_remote_nodes(nodes(), Node, Acceptors),
       NewState = State#state{acceptors = NewList2, down_nodes = [Node | Dn]},
-      {noreply, count_total(NewState)};
+      {noreply, update_majority(NewState)};
     _ ->
       {noreply, State#state{down_nodes = [Node | Dn]}}
   end;
@@ -197,6 +230,17 @@ handle_info({new_node, Node}, #state{down_nodes = Dn, acceptors = A} = State) ->
   send_exchange(Node, node(), get_local_pids(A)),
   [send_exchange(Node, DownNode, get_pids_by_node(DownNode, A)) || DownNode <- Dn],
   {noreply, State};
+
+handle_info({'DOWN', Ref, process, Pid, _Reason}, #state{acceptors = A} = State) ->
+  NewState =
+    case lists:keyfind(Pid, 2, A) of
+      true ->
+        erlang:demonitor(Ref),
+        leave_acceptor(Pid, State);
+      _ ->
+        State
+    end,
+  {noreply, unsubscribe(Pid, NewState)};
 handle_info(_Info, State) ->
   {noreply, State}.
 
@@ -235,7 +279,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-count_total(#state{acceptors = Acceptors} = State) ->
+update_majority(#state{acceptors = Acceptors} = State) ->
   Total = length(Acceptors),
   Majority = (Total div 2) +1 ,
   State#state{majority = Majority}.
@@ -267,3 +311,27 @@ get_pid_for_remote_not_from_remote_nodes([Node | RestOfNodes], DownNode, Accepto
                             end
                          end, Acceptors, RemoteAcceptorList),
   get_pid_for_remote_not_from_remote_nodes(RestOfNodes, DownNode, NewAcc).
+
+subscribe(Pid, #state{subscribers = S} = State) ->
+  Ref = erlang:monitor(process, Pid),
+  State#state{subscribers = [{Pid, Ref} | S]}.
+
+unsubscribe(Pid, #state{subscribers = S} = State) ->
+  case lists:keyfind(Pid, 1, S) of
+    {_, Ref} ->
+      erlang:demonitor(Ref, [flush]),
+      State#state{subscribers = lists:delete(Pid, S)};
+    _ ->
+      State
+  end.
+
+notify(_Msg, #state{subscribers = []}) ->
+  ok;
+notify(Msg, #state{subscribers = Subscribers}) ->
+  lists:foreach(fun({Pid, _}) -> Pid ! Msg end, Subscribers).
+
+leave_acceptor(Pid, #state{acceptors = A} = State) ->
+  NewA = lists:filter(fun({_, CPid}) -> CPid =/= Pid end, A),
+  NewState = State#state{acceptors = NewA},
+  notify({acceptor_stopped, Pid}, State),
+  update_majority(NewState).

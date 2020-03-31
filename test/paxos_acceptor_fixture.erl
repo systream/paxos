@@ -13,7 +13,7 @@
 
 
 %% API
--export([prepare/3, init/0, accept/4, sync/3, get/2]).
+-export([prepare/3, init/0, accept/4, sync/3, get/2, fold/2]).
 
 init() ->
   timer:sleep(6000),
@@ -40,6 +40,12 @@ accept(_Id, _Ref, _Value, _EtsRef) ->
 sync(_Ref, _Value, _EtsRef) ->
   erlang:error(not_implemented).
 
-
+-spec get(term(), term()) -> ok.
 get(_Ref, _State) ->
+  erlang:error(not_implemented).
+
+-spec fold(Fun, State) -> ok when
+  Fun :: fun((Key :: term(), Value :: term()) -> term()),
+  State :: term().
+fold(_Fun, _State) ->
   erlang:error(not_implemented).

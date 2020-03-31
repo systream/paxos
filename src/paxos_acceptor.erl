@@ -40,7 +40,9 @@
   get/3,
   sync/3,
   send_get_request/2,
-  loop/2, fold/2]).
+  loop/2,
+  fold/2,
+  sync_from_pid/2]).
 
 
 -spec prepare_request(pid(), pos_integer(), term()) -> ok.
@@ -107,14 +109,22 @@ start_link(Module, AcceptorsList) ->
     {error, timeout}
   end.
 
-initial_sync(_, []) ->
-  ok;
-initial_sync(CurrentAcceptorPid, [FirstAcceptor | _]) ->
-  ct:pal("fist acceptor: ~p", [FirstAcceptor]),
-  paxos_acceptor:fold(FirstAcceptor,
-                      fun(Key, Value) ->
-                        paxos_acceptor:sync(CurrentAcceptorPid, Key, Value)
-                      end),
+initial_sync(CurrentAcceptorPid, []) ->
+  paxos_acceptor_manager:subscribe(self()),
+  receive
+    {acceptor_started, AcceptorPid} when node(AcceptorPid) =/= node() ->
+      paxos_acceptor_manager:unsubscribe(self()),
+      initial_sync(CurrentAcceptorPid, [AcceptorPid])
+  end;
+initial_sync(CurrentAcceptorPid, [FirstAcceptor | _Rest]) ->
+  sync_from_pid(CurrentAcceptorPid, FirstAcceptor).
+
+-spec sync_from_pid(pid(), pid()) -> ok.
+sync_from_pid(AcceptorPid, TargetAcceptor) ->
+  paxos_acceptor:fold(TargetAcceptor,
+    fun(Key, Value) ->
+      paxos_acceptor:sync(AcceptorPid, Key, Value)
+    end),
   ok.
 
 -spec loop(module(), term()) -> no_return().
@@ -154,6 +164,5 @@ loop(Module, State) ->
       spawn_link(fun() -> Module:fold(Fun, State) end),
       ?MODULE:loop(Module, State);
     _M ->
-      %io:format("Unkown msg: ~p ~p~n", [_M, self()]),
       ?MODULE:loop(Module, State)
   end.

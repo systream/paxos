@@ -18,7 +18,7 @@
 %% Info = [tuple()]
 %%--------------------------------------------------------------------
 suite() ->
-  [{timetrap, {minutes, 5}}].
+  [{timetrap, {minutes, 2}}].
 
 %%--------------------------------------------------------------------
 %% Function: init_per_suite(Config0) ->
@@ -27,6 +27,9 @@ suite() ->
 %% Reason = term()
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
+  application:ensure_all_started(paxos),
+  % stop all acceptors
+  paxos_test_utils:stop_acceptors(),
   Config.
 
 %%--------------------------------------------------------------------
@@ -34,6 +37,7 @@ init_per_suite(Config) ->
 %% Config0 = Config1 = [tuple()]
 %%--------------------------------------------------------------------
 end_per_suite(_Config) ->
+  application:stop(paxos),
   ok.
 
 %%--------------------------------------------------------------------
@@ -170,8 +174,8 @@ dets_group({postlude, Config}) ->
 init_group(Module) ->
   Self = self(),
   spawn(fun() ->
-    {ok, Pid} = paxos_acceptor:start_link(Module, []),
-    Self ! {pid, Pid}
+          {ok, Pid} = paxos_acceptor:start_link(Module, []),
+          Self ! {pid, Pid}
         end),
   {ok, Pid} = receive
                 {pid, PPid} ->
@@ -294,7 +298,7 @@ cannot_start_process(_Config) ->
 get_not_set(Config) ->
   Pid = proplists:get_value(pid, Config),
   Key = "test_get_test",
-  ?assertEqual(not_found, paxos_acceptor:get(Pid, Key, infinity)).
+  ?assertEqual(not_found, paxos_acceptor:get(Pid, Key, 100)).
 
 
 get_prepare(Config) ->
@@ -302,7 +306,7 @@ get_prepare(Config) ->
   Key = "test_get_test2",
   ok = paxos_acceptor:prepare_request(Pid, 1, Key),
   promise_ok = receive_response(1, Key),
-  ?assertEqual(not_found, paxos_acceptor:get(Pid, Key, infinity)).
+  ?assertEqual(not_found, paxos_acceptor:get(Pid, Key, 100)).
 
 get_accept(Config) ->
   Pid = proplists:get_value(pid, Config),
@@ -311,7 +315,7 @@ get_accept(Config) ->
   promise_ok = receive_response(1, Key),
   paxos_acceptor:accept_request(Pid, 1, Key, 456),
   accepted_ok = receive_response(1, Key),
-  ?assertEqual({ok, 456}, paxos_acceptor:get(Pid, Key, infinity)).
+  ?assertEqual({ok, 456}, paxos_acceptor:get(Pid, Key, 100)).
 
 get_timeout(Config) ->
   Pid = proplists:get_value(pid, Config),
@@ -327,7 +331,7 @@ sync_not_set(Config) ->
   Pid = proplists:get_value(pid, Config),
   Key = "test_sync_test",
   ok = paxos_acceptor:sync(Pid, Key, foo),
-  ?assertEqual({ok, foo}, paxos_acceptor:get(Pid, Key, infinity)),
+  ?assertEqual({ok, foo}, paxos_acceptor:get(Pid, Key, 100)),
   ok = paxos_acceptor:prepare_request(Pid, 1, Key),
   {already_agreed, foo} = receive_response(1, Key).
 
@@ -349,7 +353,7 @@ sync_accept(Config) ->
   paxos_acceptor:accept_request(Pid, 1, Key, 456),
   accepted_ok = receive_response(1, Key),
   ok = paxos_acceptor:sync(Pid, Key, foo),
-  ?assertEqual({ok, foo}, paxos_acceptor:get(Pid, Key, infinity)).
+  ?assertEqual({ok, foo}, paxos_acceptor:get(Pid, Key, 100)).
 
 fold_empty(Config) ->
   Pid = proplists:get_value(pid, Config),
