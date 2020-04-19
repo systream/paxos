@@ -178,21 +178,11 @@ handle_call(_Request, _From, State) ->
   {noreply, NewState :: #state{}} |
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
-handle_cast({exchange, Node, List}, #state{acceptors = Acceptors} = State) ->
+handle_cast({exchange, Node, List}, #state{acceptors = Acceptors, subscribers = Subscribers} = State) ->
   NewList = lists:filter(fun({Cnode, _}) -> Cnode =/= Node end, Acceptors),
   NewList2 = lists:foldl(fun(Pid, Acc) -> [{Node, Pid} | Acc] end, NewList, List),
 
-  %lists:foreach(fun(Item) ->
-  %                case lists:member(Item, Acceptors) of
-  %                  false ->
-                      % new/unseen acceptor
-  %                    {_, Pid} = Item,
-  %                    notify({acceptor_started, Pid}, State),
-  %                    ok;
-  %                  _ ->
-  %                    ok
-  %                end
-  %              end, NewList2),
+  maybe_sync_new_acceptor(NewList2, Acceptors, Subscribers),
 
   NewState = State#state{acceptors = NewList2},
   {noreply, update_majority(NewState)};
@@ -325,9 +315,9 @@ unsubscribe(Pid, #state{subscribers = S} = State) ->
       State
   end.
 
-notify(_Msg, #state{subscribers = []}) ->
-  ok;
 notify(Msg, #state{subscribers = Subscribers}) ->
+  notify(Msg, Subscribers);
+notify(Msg, Subscribers) when is_list(Subscribers) ->
   lists:foreach(fun({Pid, _}) -> Pid ! Msg end, Subscribers).
 
 leave_acceptor(Pid, #state{acceptors = A} = State) ->
@@ -335,3 +325,16 @@ leave_acceptor(Pid, #state{acceptors = A} = State) ->
   NewState = State#state{acceptors = NewA},
   notify({acceptor_stopped, Pid}, State),
   update_majority(NewState).
+
+
+maybe_sync_new_acceptor([], _Acceptors, _Subscribers) ->
+  ok;
+maybe_sync_new_acceptor([Item | Rest], Acceptors, Subscribers) ->
+  case lists:member(Item, Acceptors) of
+    false ->
+      {_, Pid} = Item,
+      notify({acceptor_started, Pid}, Subscribers);
+    _ ->
+      ok
+  end,
+  maybe_sync_new_acceptor(Rest, lists:delete(Item, Acceptors), Subscribers).
