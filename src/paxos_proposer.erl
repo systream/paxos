@@ -8,7 +8,7 @@
 -module(paxos_proposer).
 -author("tihanyipeter").
 
--define(DEFAULT_TIMEOUT, 100).
+-define(DEFAULT_TIMEOUT, 5000).
 
 %-define(LOG(F, A), ct:pal(F, A)).
 -define(LOG(_F, _A), ok).
@@ -35,9 +35,20 @@ get(_Key, Num, AcceptorList) when length(AcceptorList) < Num ->
   {error, not_enough_acceptors};
 get(Key, Num, AcceptorList) when Num >= 1 ->
   ?LOG("* Start get request Key: ~p Num: ~p~n", [Key, Num]),
-  send_get_request(Key, AcceptorList, Num),
   Majority = (Num div 2) + 1,
-  receive_object(Key, #{}, Majority, Num).
+  Ref = make_ref(),
+  Self = self(),
+  {MPid, MRef} = spawn_monitor(fun() ->
+                                send_get_request(Key, AcceptorList, Num),
+                                Self ! {Ref, receive_object(Key, #{}, Majority, Num)}
+                               end),
+  receive
+    {Ref, Result} ->
+      erlang:demonitor(MRef, [flush]),
+      Result;
+    {'DOWN', MRef, process, MPid, Reason} ->
+      {error, Reason}
+  end.
 
 
 -spec put(term(), term()) ->
@@ -45,12 +56,16 @@ get(Key, Num, AcceptorList) when Num >= 1 ->
 put(Key, Value) ->
   Self = self(),
   Ref = make_ref(),
-  Pid = spawn_link(fun() -> Self ! {Ref, put(Key, Value, 1)} end),
+  {MPid, MRef} = spawn_monitor(fun() -> Self ! {Ref, put(Key, Value, 1)} end),
   receive
     {Ref, Result} ->
-      Result
-  after 3000 ->
-    exit(Pid, normal),
+      erlang:demonitor(MRef, [flush]),
+      Result;
+    {'DOWN', MRef, process, MPid, Reason} ->
+      {error, Reason}
+  after ?DEFAULT_TIMEOUT ->
+    exit(MPid, normal),
+    erlang:demonitor(MRef, [flush]),
     timeout
   end.
 
@@ -128,11 +143,10 @@ send_get_request(_Key, _AcceptorList, 0) ->
   ok;
 send_get_request(_Key, AcceptorList, Num) when length(AcceptorList) < Num ->
   {error, not_enough_acceptors};
-send_get_request(Key, AcceptorList, Num) ->
-  Acceptor = lists:nth(rand:uniform(length(AcceptorList)), AcceptorList),
+send_get_request(Key, [Acceptor | AcceptorList], Num) ->
   paxos_acceptor:send_get_request(Acceptor, Key),
   ?LOG("Sent get request to ~p with key: ~p~n", [Acceptor, Key]),
-  send_get_request(Key, lists:delete(Acceptor, AcceptorList), Num-1).
+  send_get_request(Key, AcceptorList, Num-1).
 
 prepare({_, []}, _Key, _Id) ->
   ?LOG("Prepare request: Not enough acceptors available: num acceptors: ~p~n",
